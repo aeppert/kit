@@ -1,6 +1,7 @@
 package conn
 
 import (
+	"errors"
 	"net"
 	"time"
 
@@ -64,6 +65,17 @@ func (m *Manager) Put(err error) {
 	m.putc <- err
 }
 
+// Write writes the passed data to the connection in a single Take/Put cycle.
+func (m *Manager) Write(b []byte) (int, error) {
+	conn := m.Take()
+	if conn == nil {
+		return 0, ErrConnectionUnavailable
+	}
+	n, err := conn.Write(b)
+	defer m.Put(err)
+	return n, err
+}
+
 func (m *Manager) loop() {
 	var (
 		conn       = dial(m.dialer, m.network, m.address, m.logger) // may block slightly
@@ -122,3 +134,7 @@ func exponential(d time.Duration) time.Duration {
 	}
 	return d
 }
+
+// ErrConnectionUnavailable is returned by the Manager's Write method when the
+// manager cannot yield a good connection.
+var ErrConnectionUnavailable = errors.New("connection unavailable")
