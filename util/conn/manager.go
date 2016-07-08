@@ -35,9 +35,8 @@ type Manager struct {
 
 // NewManager returns a connection manager using the passed Dialer, network, and
 // address. The AfterFunc is used to control exponential backoff and retries.
-// For normal use, pass net.Dial and time.After as the Dialer and AfterFunc
-// respectively. The logger is used to log errors; pass a log.NopLogger if you
-// don't care to receive them.
+// The logger is used to log errors; pass a log.NopLogger if you don't care to
+// receive them. For normal use, prefer NewDefaultManager.
 func NewManager(d Dialer, network, address string, after AfterFunc, logger log.Logger) *Manager {
 	m := &Manager{
 		dialer:  d,
@@ -51,6 +50,12 @@ func NewManager(d Dialer, network, address string, after AfterFunc, logger log.L
 	}
 	go m.loop()
 	return m
+}
+
+// NewDefaultManager is a helper constructor, suitable for most normal use in
+// real (non-test) code. It uses the real net.Dial and time.After functions.
+func NewDefaultManager(network, address string, logger log.Logger) *Manager {
+	return NewManager(net.Dial, network, address, time.After, logger)
 }
 
 // Take yields the current connection. It may be nil.
