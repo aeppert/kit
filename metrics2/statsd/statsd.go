@@ -1,15 +1,20 @@
 // Package statsd implements a statsd backend for package metrics. Metrics are
-// aggregated and reported in the statsd plaintext format. Sampling is not
-// supported for counters because we aggregate counter updates and send in
-// batches. Sampling is, however, supported for Timings.
+// aggregated and reported in batches, in the StatsD plaintext format. Sampling
+// is not supported for counters because we aggregate counter updates and send
+// in batches. Sampling is, however, supported for Timings.
+//
+// Batching observations and emitting every few seconds is useful even if you
+// connect to your StatsD server over UDP. Emitting one network packet per
+// observation can quickly overwhelm even the fastest internal network. Batching
+// allows you to more linearly scale with growth.
 //
 // Typically you'll create a statsd object in your main function.
 //
-//    s, stop := New("myorg.myteam.", "udp", "statsd:8126", time.Second, log.NewNopLogger())
+//    s, stop := New("myprefix.", "udp", "statsd:8126", time.Second, log.NewNopLogger())
 //    defer stop()
 //
 // Then, create the metrics that your application will track from that object.
-// Pass them as dependencies to the component that needs them. Don't place them
+// Pass them as dependencies to the component that needs them; don't place them
 // in the global scope.
 //
 //    c := s.NewCounter("requests")
@@ -40,11 +45,11 @@ import (
 	"github.com/go-kit/kit/util/conn"
 )
 
-// Statsd is a collection of individual metrics. To send metrics to a statsd
-// server, create a statsd object, use it to create metrics objects, and pass
+// Statsd is a collection of individual metrics. To send metrics to a StatsD
+// server, create a Statsd object, use it to create metrics objects, and pass
 // those objects as dependencies to the components that will use them.
 //
-// Statsd has a concept of Timings rather than Histograms. You can create Timing
+// StatsD has a concept of Timings rather than Histograms. You can create Timing
 // objects, or create Histograms that wrap Timings under the hood.
 type Statsd struct {
 	mtx      sync.RWMutex
@@ -81,7 +86,7 @@ func New(prefix string, network, address string, flushInterval time.Duration, lo
 }
 
 // NewCounter returns a counter metric with the given name. Adds are buffered
-// until the underlying statsd object is flushed.
+// until the underlying Statsd object is flushed.
 func (s *Statsd) NewCounter(name string) *generic.Counter {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -149,9 +154,9 @@ func (s *Statsd) MustNewHistogram(name string, observeIn, reportIn time.Duration
 	return h
 }
 
-// FlushTo invokes WriteTo to the writer every time the ticker fires.
-// FlushTo blocks until the ticker is stopped.
-// See the example for typical usage.
+// FlushTo invokes WriteTo to the writer every time the ticker fires. FlushTo
+// blocks until the ticker is stopped. Most users won't need to call this method
+// directly, and should prefer to use the New constructor.
 func (s *Statsd) FlushTo(w io.Writer, ticker *time.Ticker) {
 	for range ticker.C {
 		if _, err := s.WriteTo(w); err != nil {
@@ -160,10 +165,11 @@ func (s *Statsd) FlushTo(w io.Writer, ticker *time.Ticker) {
 	}
 }
 
-// WriteTo dumps the current state of all of the Statsd metrics to the given
-// writer in the statsd format. Counters and gauges are dumped with their
-// current values; counters are reset. Timings write each retained observation
-// in sequence, and are reset.
+// WriteTo dumps the current state of all of the metrics to the given writer in
+// the statsd format. Each metric has its current value(s) written in sequential
+// calls to Write. Counters and gauges are dumped with their current values;
+// counters are reset. Timings write each retained observation in sequence, and
+// are reset.
 func (s *Statsd) WriteTo(w io.Writer) (int64, error) {
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()
@@ -188,11 +194,11 @@ func (s *Statsd) WriteTo(w io.Writer) (int64, error) {
 	}
 	for name, t := range s.timings {
 		var sampling string
-		if r := t.sampleRate; r < 1.0 {
+		if r := t.SampleRate(); r < 1.0 {
 			sampling = fmt.Sprintf("|@%f", r)
 		}
 		for _, value := range t.Values() {
-			n, err = fmt.Fprintf(w, "%s:%d|%s%s\n", name, value, t.unit, sampling)
+			n, err = fmt.Fprintf(w, "%s:%d|%s%s\n", name, value, t.Unit(), sampling)
 			count += int64(n)
 			if err != nil {
 				return count, err
@@ -202,16 +208,17 @@ func (s *Statsd) WriteTo(w io.Writer) (int64, error) {
 	return count, nil
 }
 
-// Timing is used like a histogram, but has a different implementation. Statsd
+// Timing is used like a histogram, but has a different implementation. StatsD
 // expects you to emit each observation to the aggregation server, and they do
 // statistical processing there. This is easier to understand, but much (much)
 // less efficient. So, we batch observations and emit the batch every interval.
-// And, we support sampling
+// And we support sampling, at observation time.
 type Timing struct {
 	mtx        sync.Mutex
 	unit       string
 	sampleRate float64
 	values     []int64
+	lvs        []string // immutable
 }
 
 // NewTiming returns a new Timing object with the given units (e.g. "ms") and
@@ -221,6 +228,26 @@ func NewTiming(unit string, sampleRate float64) *Timing {
 		unit:       unit,
 		sampleRate: sampleRate,
 	}
+}
+
+// With provides label values. They're not supported in Statsd, but they are
+// supported in DogStatsD, which uses the same type.
+func (t *Timing) With(labelValues ...string) *Timing {
+	if len(labelValues)%2 != 0 {
+		labelValues = append(labelValues, generic.LabelValueUnknown)
+	}
+	return &Timing{
+		unit:       t.unit,
+		sampleRate: t.sampleRate,
+		values:     t.values,
+		lvs:        append(t.lvs, labelValues...),
+	}
+}
+
+// LabelValues returns the current set of label values. They're not supported in
+// Statsd, but they are supported in DogStatsD, which uses the same type.
+func (t *Timing) LabelValues() []string {
+	return t.lvs
 }
 
 // Observe collects the value into the timing. If sample rate is less than 1.0,
@@ -239,7 +266,7 @@ func (t *Timing) Observe(value int64) {
 	t.values = append(t.values, value)
 }
 
-// Values returns the observed values since the last call to values. This method
+// Values returns the observed values since the last call to Values. This method
 // clears the internal state of the Timing; better get those values somewhere
 // safe!
 func (t *Timing) Values() []int64 {
@@ -249,6 +276,12 @@ func (t *Timing) Values() []int64 {
 	t.values = []int64{} // TODO(pb): better garbage behavior possible?
 	return res
 }
+
+// Unit returns the unit, e.g. "ms".
+func (t *Timing) Unit() string { return t.unit }
+
+// SampleRate returns the sample rate, e.g. 0.01 or 1.0.
+func (t *Timing) SampleRate() float64 { return t.sampleRate }
 
 // histogram wraps a Timing and implements Histogram. Namely, it takes float64
 // observations and converts them to int64 according to a defined ratio, likely

@@ -112,8 +112,8 @@ func (g *Graphite) WriteTo(w io.Writer) (int64, error) {
 	defer g.mtx.RUnlock()
 	var (
 		n     int
-		count int64
 		err   error
+		count int64
 		now   = time.Now().Unix()
 	)
 	for path, c := range g.counters {

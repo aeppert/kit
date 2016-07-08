@@ -60,6 +60,8 @@ func (c *Counter) Value() float64 {
 }
 
 // ValueReset returns the current value of the counter, and resets it to zero.
+// This is useful for metrics backends whose counter aggregations expect deltas,
+// like statsd.
 func (c *Counter) ValueReset() float64 {
 	for {
 		var (
