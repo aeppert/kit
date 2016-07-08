@@ -28,12 +28,13 @@ import (
 //   go g.FlushTo(conn.NewManager(...), time.NewTicker(5*time.Second))
 //
 type Graphite struct {
-	mtx        sync.RWMutex
-	prefix     string
-	counters   map[string]*generic.Counter
-	gauges     map[string]*generic.Gauge
-	histograms map[string]*generic.SimpleHistogram
-	logger     log.Logger
+	mtx         sync.RWMutex
+	prefix      string
+	counters    map[string]*generic.Counter
+	gauges      map[string]*generic.Gauge
+	shistograms map[string]*generic.SimpleHistogram
+	histograms  map[string]*generic.Histogram
+	logger      log.Logger
 }
 
 // New returns a Graphite object capable of allocating individual metrics. All
@@ -42,11 +43,12 @@ type Graphite struct {
 // via the WriteTo method.
 func New(prefix string, logger log.Logger) *Graphite {
 	return &Graphite{
-		prefix:     prefix,
-		counters:   make(map[string]*generic.Counter),
-		gauges:     make(map[string]*generic.Gauge),
-		histograms: make(map[string]*generic.SimpleHistogram),
-		logger:     logger,
+		prefix:      prefix,
+		counters:    map[string]*generic.Counter{},
+		gauges:      map[string]*generic.Gauge{},
+		shistograms: map[string]*generic.SimpleHistogram{},
+		histograms:  map[string]*generic.Histogram{},
+		logger:      logger,
 	}
 }
 
@@ -68,11 +70,25 @@ func (g *Graphite) NewGauge(name string) *generic.Gauge {
 	return ga
 }
 
-// NewHistogram allocates and returns a simple histogram with the given name.
-func (g *Graphite) NewHistogram(name string) *generic.SimpleHistogram {
+// NewSimpleHistogram allocates and returns a simple histogram with the given
+// name. Simple histograms report their approximate moving average value in a
+// metric with the .mean suffix.
+func (g *Graphite) NewSimpleHistogram(name string) *generic.SimpleHistogram {
 	g.mtx.Lock()
 	defer g.mtx.Unlock()
 	h := generic.NewSimpleHistogram()
+	g.shistograms[g.prefix+name] = h
+	return h
+}
+
+// NewHistogram allocates and returns a histogram with the given name and bucket
+// count. 50 is a good default number of buckets. Histograms report their 50th,
+// 90th, 95th, and 99th quantiles in distinct metrics with the .p50, .p90, .p95,
+// and .p99 suffixes, respectively.
+func (g *Graphite) NewHistogram(name string, buckets int) *generic.Histogram {
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+	h := generic.NewHistogram(buckets)
 	g.histograms[g.prefix+name] = h
 	return h
 }
@@ -112,8 +128,18 @@ func (g *Graphite) WriteTo(w io.Writer) (int64, error) {
 		}
 		count += int64(n)
 	}
-	for path, h := range g.histograms {
+	for path, h := range g.shistograms {
 		n, err = fmt.Fprintf(w, "%s.mean %f %d\n", path, h.ApproximateMovingAverage(), now)
+		if err != nil {
+			return count, err
+		}
+		count += int64(n)
+	}
+	for path, h := range g.histograms {
+		n, err = fmt.Fprintf(w, "%s.p50 %f %d\n", path, h.Quantile(0.50), now)
+		n, err = fmt.Fprintf(w, "%s.p90 %f %d\n", path, h.Quantile(0.90), now)
+		n, err = fmt.Fprintf(w, "%s.p95 %f %d\n", path, h.Quantile(0.95), now)
+		n, err = fmt.Fprintf(w, "%s.p99 %f %d\n", path, h.Quantile(0.99), now)
 		if err != nil {
 			return count, err
 		}

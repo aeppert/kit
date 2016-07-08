@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/VividCortex/gohistogram"
 	"github.com/go-kit/kit/metrics2"
 )
 
@@ -17,8 +18,9 @@ const LabelValueUnknown = "unknown"
 
 // Counter is an in-memory implementation of a Counter.
 type Counter struct {
-	bits uint64
-	lvs  []string // immutable
+	sampleRate float64
+	bits       uint64
+	lvs        []string // immutable
 }
 
 // NewCounter returns a new, usable Counter.
@@ -54,6 +56,20 @@ func (c *Counter) Add(delta float64) {
 // Value returns the current value of the counter.
 func (c *Counter) Value() float64 {
 	return math.Float64frombits(atomic.LoadUint64(&c.bits))
+}
+
+// ValueReset returns the current value of the counter, and resets it to zero.
+func (c *Counter) ValueReset() float64 {
+	for {
+		var (
+			old  = atomic.LoadUint64(&c.bits)
+			newf = 0.0
+			new  = math.Float64bits(newf)
+		)
+		if atomic.CompareAndSwapUint64(&c.bits, old, new) {
+			return math.Float64frombits(old)
+		}
+	}
 }
 
 // LabelValues returns the set of label values attached to the counter.
@@ -106,7 +122,8 @@ type SimpleHistogram struct {
 	n   uint64
 }
 
-// NewSimpleHistogram returns a SimpleHistogram, ready to use.
+// NewSimpleHistogram returns a SimpleHistogram, which tracks only an approximate
+// moving average of observations.
 func NewSimpleHistogram() *SimpleHistogram {
 	return &SimpleHistogram{}
 }
@@ -125,4 +142,29 @@ func (h *SimpleHistogram) ApproximateMovingAverage() float64 {
 	h.mtx.RLock()
 	h.mtx.RUnlock()
 	return h.avg
+}
+
+// Histogram is an in-memory implementation of a streaming histogram, based on
+// VividCortex/gohistogram. It dynamically computes quantiles, so it's not
+// suitable for aggregation.
+type Histogram struct {
+	h gohistogram.Histogram
+}
+
+// NewHistogram returns a numeric histogram based on VividCortex/gohistogram. A
+// good default value for buckets is 50.
+func NewHistogram(buckets int) *Histogram {
+	return &Histogram{
+		h: gohistogram.NewHistogram(buckets),
+	}
+}
+
+// Observe implements Histogram.
+func (h *Histogram) Observe(value float64) {
+	h.h.Add(value)
+}
+
+// Quantile returns the value of the quantile q, 0.0 < q < 1.0.
+func (h *Histogram) Quantile(q float64) float64 {
+	return h.h.Quantile(q)
 }

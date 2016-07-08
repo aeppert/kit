@@ -2,12 +2,9 @@ package prometheus
 
 import (
 	"github.com/go-kit/kit/metrics2"
+	"github.com/go-kit/kit/metrics2/generic"
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-// LabelValueUnknown is used as a label value when one is expected but not
-// provided, typically due to user error.
-var LabelValueUnknown = "unknown"
 
 // Counter implements Counter, via a Prometheus CounterVec.
 type Counter struct {
@@ -34,7 +31,7 @@ func NewCounter(cv *prometheus.CounterVec) *Counter {
 // With implements Counter.
 func (c *Counter) With(labelValues ...string) metrics.Counter {
 	if len(labelValues)%2 != 0 {
-		labelValues = append(labelValues, LabelValueUnknown)
+		labelValues = append(labelValues, generic.LabelValueUnknown)
 	}
 	return &Counter{
 		cv: c.cv,
@@ -72,7 +69,7 @@ func NewGauge(gv *prometheus.GaugeVec) *Gauge {
 // With implements Gauge.
 func (g *Gauge) With(labelValues ...string) metrics.Gauge {
 	if len(labelValues)%2 != 0 {
-		labelValues = append(labelValues, LabelValueUnknown)
+		labelValues = append(labelValues, generic.LabelValueUnknown)
 	}
 	return &Gauge{
 		gv: g.gv,
@@ -117,7 +114,7 @@ func NewSummary(sv *prometheus.SummaryVec) *Summary {
 // With implements Histogram.
 func (s *Summary) With(labelValues ...string) metrics.Histogram {
 	if len(labelValues)%2 != 0 {
-		labelValues = append(labelValues, LabelValueUnknown)
+		labelValues = append(labelValues, generic.LabelValueUnknown)
 	}
 	return &Summary{
 		sv: s.sv,
@@ -157,7 +154,7 @@ func NewHistogram(hv *prometheus.HistogramVec) *Histogram {
 // With implements Histogram.
 func (h *Histogram) With(labelValues ...string) metrics.Histogram {
 	if len(labelValues)%2 != 0 {
-		labelValues = append(labelValues, LabelValueUnknown)
+		labelValues = append(labelValues, generic.LabelValueUnknown)
 	}
 	return &Histogram{
 		hv: h.hv,
