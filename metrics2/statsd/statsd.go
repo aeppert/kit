@@ -1,21 +1,51 @@
-// Package statsd implements a statsd backend for package metrics.
+// Package statsd implements a statsd backend for package metrics. Metrics are
+// aggregated and reported in the statsd plaintext format. Sampling is not
+// supported for counters because we aggregate counter updates and send in
+// batches. Sampling is, however, supported for Timings.
+//
+// Typically you'll create a statsd object in your main function.
+//
+//    s, stop := New("myorg.myteam.", "udp", "statsd:8126", time.Second, log.NewNopLogger())
+//    defer stop()
+//
+// Then, create the metrics that your application will track from that object.
+// Pass them as dependencies to the component that needs them. Don't place them
+// in the global scope.
+//
+//    c := s.NewCounter("requests")
+//    g := s.NewGauge("queue_depth")
+//    t := s.NewTiming("foo_duration", "ms", 1.0)
+//    h := s.MustNewHistogram("bar_duration", time.Second, time.Millisecond, 1.0)
+//
+// Invoke them in your components when you have something to instrument.
+//
+//    c.Add(1)
+//    g.Set(123)
+//    t.Observe(16)    // 16 ms
+//    h.Observe(0.032) // 32 ms
+//
 package statsd
 
 import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"math/rand"
 	"sync"
 	"time"
 
-	"math/rand"
-
+	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/metrics2"
 	"github.com/go-kit/kit/metrics2/generic"
+	"github.com/go-kit/kit/util/conn"
 )
 
-// Statsd is a collection of individual metrics. Statsd has a concept of Timings rather than Histograms.
+// Statsd is a collection of individual metrics. To send metrics to a statsd
+// server, create a statsd object, use it to create metrics objects, and pass
+// those objects as dependencies to the components that will use them.
+//
+// Statsd has a concept of Timings rather than Histograms. You can create Timing
+// objects, or create Histograms that wrap Timings under the hood.
 type Statsd struct {
 	mtx      sync.RWMutex
 	prefix   string
@@ -25,7 +55,11 @@ type Statsd struct {
 	logger   log.Logger
 }
 
-func New(prefix string, logger log.Logger) *Statsd {
+// NewRaw creates a Statsd object. By default the metrics will not be emitted
+// anywhere. Use WriteTo to flush the metrics once, or FlushTo (in a separate
+// goroutine) to flush them on a regular schedule, or use the New constructor to
+// set up the object and flushing at the same time.
+func NewRaw(prefix string, logger log.Logger) *Statsd {
 	return &Statsd{
 		prefix:   prefix,
 		counters: map[string]*generic.Counter{},
@@ -35,6 +69,19 @@ func New(prefix string, logger log.Logger) *Statsd {
 	}
 }
 
+// New creates a Statsd object that flushes all metrics in the statsd format
+// every flushInterval to the network and address. Use the returned stop
+// function to terminate the flushing goroutine.
+func New(prefix string, network, address string, flushInterval time.Duration, logger log.Logger) (res *Statsd, stop func()) {
+	s := NewRaw(prefix, logger)
+	manager := conn.NewDefaultManager(network, address, logger)
+	ticker := time.NewTicker(flushInterval)
+	go s.FlushTo(manager, ticker)
+	return s, ticker.Stop
+}
+
+// NewCounter returns a counter metric with the given name. Adds are buffered
+// until the underlying statsd object is flushed.
 func (s *Statsd) NewCounter(name string) *generic.Counter {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -43,6 +90,7 @@ func (s *Statsd) NewCounter(name string) *generic.Counter {
 	return c
 }
 
+// NewGauge returns a gauge metric with the given name.
 func (s *Statsd) NewGauge(name string) *generic.Gauge {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -51,6 +99,10 @@ func (s *Statsd) NewGauge(name string) *generic.Gauge {
 	return g
 }
 
+// NewTiming returns a timing metric with the given name, unit (e.g. "ms") and
+// sample rate. Pass a sample rate of 1.0 or greater to disable sampling.
+// Sampling is done at observation time. Observations are buffered until the
+// underlying statsd object is flushed.
 func (s *Statsd) NewTiming(name, unit string, sampleRate float64) *Timing {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -59,6 +111,11 @@ func (s *Statsd) NewTiming(name, unit string, sampleRate float64) *Timing {
 	return t
 }
 
+// NewHistogram returns a histogram metric with the given name. Observations are
+// assumed to be taken in units of observeIn, e.g. time.Second. The histogram
+// wraps a timing which reports in units of reportIn, e.g. time.Millisecond.
+// Only nanoseconds, microseconds, milliseconds, and seconds are supported
+// reportIn values. The underlying timing is sampled according to sampleRate.
 func (s *Statsd) NewHistogram(name string, observeIn, reportIn time.Duration, sampleRate float64) (metrics.Histogram, error) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -82,12 +139,25 @@ func (s *Statsd) NewHistogram(name string, observeIn, reportIn time.Duration, sa
 	return newHistogram(observeIn, reportIn, t), nil
 }
 
+// MustNewHistogram is a convenience constructor for NewHistogram, which panics
+// if there is an error.
 func (s *Statsd) MustNewHistogram(name string, observeIn, reportIn time.Duration, sampleRate float64) metrics.Histogram {
 	h, err := s.NewHistogram(name, observeIn, reportIn, sampleRate)
 	if err != nil {
 		panic(err)
 	}
 	return h
+}
+
+// FlushTo invokes WriteTo to the writer every time the ticker fires.
+// FlushTo blocks until the ticker is stopped.
+// See the example for typical usage.
+func (s *Statsd) FlushTo(w io.Writer, ticker *time.Ticker) {
+	for range ticker.C {
+		if _, err := s.WriteTo(w); err != nil {
+			s.logger.Log("during", "Flush", "err", err)
+		}
+	}
 }
 
 // WriteTo dumps the current state of all of the Statsd metrics to the given

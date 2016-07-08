@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/VividCortex/gohistogram"
+
 	"github.com/go-kit/kit/metrics2"
 )
 

@@ -1,9 +1,11 @@
 // Package graphite provides a Graphite implementation for metrics. Metrics are
-// emitted with each observation in the plaintext protocol, which looks like
-//
-//   "<metric path> <metric value> <metric timestamp>"
-//
+// emitted with each observation in the plaintext protocol. See
 // http://graphite.readthedocs.io/en/latest/feeding-carbon.html#the-plaintext-protocol
+// for more information.
+//
+// Graphite does not have a native understanding of metric parameterization, so
+// label values are aggregated but not reported. Use distinct metrics for each
+// unique combination of label values.
 package graphite
 
 import (
@@ -93,7 +95,7 @@ func (g *Graphite) NewHistogram(name string, buckets int) *generic.Histogram {
 	return h
 }
 
-// FlushTo flushes the contents to the writer every time the ticker fires.
+// FlushTo invokes WriteTo to the writer every time the ticker fires.
 // FlushTo blocks until the ticker is stopped.
 func (g *Graphite) FlushTo(w io.Writer, ticker *time.Ticker) {
 	for range ticker.C {
